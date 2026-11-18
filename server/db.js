@@ -1,87 +1,140 @@
-import { DatabaseSync } from "node:sqlite";
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import pg from "pg";
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-export const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(here, "data"));
-export const UPLOAD_DIR = path.join(DATA_DIR, "receipts");
-fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+/*
+ * Postgres layer. In production this talks to Neon (or any Postgres) through DATABASE_URL.
+ * Under `npm test` with no DATABASE_URL it falls back to an in-process Postgres (PGlite),
+ * so the tests need no database server.
+ */
+const URL = process.env.DATABASE_URL || process.env.POSTGRES_URL;
+const IN_MEMORY = process.env.NODE_ENV === "test" && !URL;
 
-const raw = new DatabaseSync(process.env.DB_FILE || path.join(DATA_DIR, "budgetmate.db"));
-raw.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
+// Return bigint / numeric columns as JS numbers (they are only ever counts and money here).
+pg.types.setTypeParser(20, Number);
+pg.types.setTypeParser(1700, Number);
 
-// Small wrapper so the rest of the code can use db.prepare / db.exec / db.transaction.
+// Turn `?` placeholders into $1, $2, ... so queries stay readable.
+const num = (sql) => { let i = 0; return sql.replace(/\?/g, () => `$${++i}`); };
+
+let driver;
+if (IN_MEMORY) {
+  const { PGlite } = await import("@electric-sql/pglite");
+  const lite = new PGlite();
+  const wrap = (c) => ({
+    query: async (sql, params) => { const r = await c.query(sql, params); return { rows: r.rows, rowCount: r.affectedRows ?? r.rows.length }; },
+    exec: (sql) => c.exec(sql),
+  });
+  driver = { ...wrap(lite), tx: (fn) => lite.transaction((t) => fn(wrap(t))) };
+} else {
+  if (!URL) {
+    throw new Error("DATABASE_URL is not set. Add your Neon connection string to the environment (see README).");
+  }
+  const pool = new pg.Pool({
+    connectionString: URL,
+    max: Number(process.env.PG_POOL_MAX || 5),
+    idleTimeoutMillis: 10_000,
+    connectionTimeoutMillis: 10_000,
+  });
+  pool.on("error", (e) => console.error("Postgres pool error:", e.message));
+  const wrap = (c) => ({ query: (sql, params) => c.query(sql, params), exec: (sql) => c.query(sql) });
+  driver = {
+    ...wrap(pool),
+    tx: async (fn) => {
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const r = await fn(wrap(client));
+        await client.query("COMMIT");
+        return r;
+      } catch (e) {
+        await client.query("ROLLBACK").catch(() => {});
+        throw e;
+      } finally { client.release(); }
+    },
+  };
+}
+
+// get -> one row or undefined, all -> rows, run -> { changes }, insert -> new row id
+const api = (d) => ({
+  get: async (sql, ...p) => (await d.query(num(sql), p)).rows[0],
+  all: async (sql, ...p) => (await d.query(num(sql), p)).rows,
+  run: async (sql, ...p) => ({ changes: (await d.query(num(sql), p)).rowCount }),
+  insert: async (sql, ...p) => (await d.query(num(sql) + " RETURNING id", p)).rows[0].id,
+});
+
 const db = {
-  exec: (sql) => raw.exec(sql),
-  prepare: (sql) => raw.prepare(sql),
-  transaction: (fn) => (...args) => {
-    raw.exec("BEGIN");
-    try { const r = fn(...args); raw.exec("COMMIT"); return r; }
-    catch (e) { raw.exec("ROLLBACK"); throw e; }
-  },
+  ...api(driver),
+  // db.transaction(async (tx) => { await tx.run(...) })  -- tx has the same get/all/run/insert
+  transaction: (fn) => driver.tx((t) => fn(api(t))),
 };
+export default db;
 
-db.exec(`
+const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id SERIAL PRIMARY KEY,
   name TEXT NOT NULL,
-  email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  email TEXT NOT NULL,
   password_hash TEXT NOT NULL,
   phone TEXT DEFAULT '',
   city TEXT DEFAULT '',
   occupation TEXT DEFAULT '',
   prefs TEXT NOT NULL DEFAULT '{"budget":true,"goal":true,"week":true}',
   reset_token TEXT,
-  reset_expires INTEGER,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  password_changed_at TEXT NOT NULL DEFAULT (datetime('now'))
+  reset_expires TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  password_changed_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE UNIQUE INDEX IF NOT EXISTS users_email_lower ON users (lower(email));
 CREATE TABLE IF NOT EXISTS payment_methods (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id SERIAL PRIMARY KEY,
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
   detail TEXT DEFAULT '',
   kind TEXT NOT NULL DEFAULT 'bank'
 );
 CREATE TABLE IF NOT EXISTS transactions (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id SERIAL PRIMARY KEY,
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   title TEXT NOT NULL,
   note TEXT DEFAULT '',
   category TEXT NOT NULL,
-  amount REAL NOT NULL,            -- negative = expense, positive = income
+  amount DOUBLE PRECISION NOT NULL,   -- negative = expense, positive = income
   payment_method TEXT DEFAULT '',
-  date TEXT NOT NULL,              -- YYYY-MM-DD
-  receipt TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  date TEXT NOT NULL,                 -- YYYY-MM-DD
+  receipt_data BYTEA,                 -- receipts live in the database (Vercel has no persistent disk)
+  receipt_mime TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS tx_user_date ON transactions(user_id, date);
 CREATE TABLE IF NOT EXISTS budgets (
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   category TEXT NOT NULL,
-  limit_amount REAL NOT NULL,
+  limit_amount DOUBLE PRECISION NOT NULL,
   PRIMARY KEY (user_id, category)
 );
 CREATE TABLE IF NOT EXISTS goals (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id SERIAL PRIMARY KEY,
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
-  target REAL NOT NULL,
+  target DOUBLE PRECISION NOT NULL,
   target_date TEXT NOT NULL,
   note TEXT DEFAULT '',
   color TEXT NOT NULL DEFAULT 'emerald',
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE TABLE IF NOT EXISTS contributions (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id SERIAL PRIMARY KEY,
   goal_id INTEGER NOT NULL REFERENCES goals(id) ON DELETE CASCADE,
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  amount REAL NOT NULL,
+  amount DOUBLE PRECISION NOT NULL,
   source TEXT DEFAULT '',
   date TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS contrib_goal ON contributions(goal_id);
-`);
+`;
 
-export default db;
+// Creates the tables if they don't exist. Memoised, so it runs once per server instance.
+let ready;
+export const initDb = () => {
+  ready ??= driver.exec(SCHEMA).catch((e) => { ready = undefined; throw e; });
+  return ready;
+};

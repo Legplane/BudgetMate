@@ -98,14 +98,14 @@ export default function ExpensesPage({ editId }) {
         <input value={f.note} maxLength={200} onChange={(e) => set("note", e.target.value)} placeholder="Optional" className={`${inputCls} mb-4`} />
         <div className="border border-slate-200 bg-slate-50 rounded-xl p-3 flex justify-between items-center mb-4">
           <div className="text-xs"><b>Attach receipt</b>
-            <div className="text-slate-500">{file ? <span className="inline-flex items-center gap-1"><Paperclip size={11} />{file.name}</span> : orig?.hasReceipt ? "A receipt is already attached. Choose a file to replace it." : "PNG, JPG, or PDF up to 10 MB"}</div></div>
+            <div className="text-slate-500">{file ? <span className="inline-flex items-center gap-1"><Paperclip size={11} />{file.name}</span> : orig?.hasReceipt ? "A receipt is already attached. Choose a file to replace it." : "PNG, JPG, or PDF up to 4 MB"}</div></div>
           <div className="flex gap-2">
             {orig?.hasReceipt && !file && <Ghost onClick={() => api.file(`/transactions/${editId}/receipt`).catch((e) => toast(e.message, "err"))}>View</Ghost>}
             <Ghost onClick={() => fileRef.current.click()}>Choose file</Ghost>
           </div>
           <input ref={fileRef} type="file" hidden accept=".png,.jpg,.jpeg,.pdf" onChange={(e) => {
             const x = e.target.files[0];
-            if (x && x.size > 10 * 1024 * 1024) { setErr("Receipt must be under 10 MB."); e.target.value = ""; return; }
+            if (x && x.size > 4 * 1024 * 1024) { setErr("Receipt must be under 4 MB."); e.target.value = ""; return; }
             setFile(x || null);
           }} />
         </div>

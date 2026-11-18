@@ -4,7 +4,9 @@ export const DEFAULT_BUDGETS = { Food: 5000, Transport: 2500, Bills: 3000, Schoo
 
 const pad = (n) => String(n).padStart(2, "0");
 export const ymd = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-export const today = () => ymd(new Date());
+// Vercel runs in UTC, so "today" is computed in the app's timezone (default Philippines).
+const TZ = process.env.APP_TZ || "Asia/Manila";
+export const today = () => new Intl.DateTimeFormat("en-CA", { timeZone: TZ }).format(new Date());
 export const monthOf = (date) => date.slice(0, 7);
 export const currentMonth = () => today().slice(0, 7);
 export const validMonth = (m) => /^\d{4}-(0[1-9]|1[0-2])$/.test(m || "");

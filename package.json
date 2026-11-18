@@ -5,12 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "concurrently -k -n api,web -c cyan,magenta \"npm:server:dev\" \"vite\"",
-    "server": "node server/index.js",
-    "server:dev": "node --watch server/index.js",
+    "server": "node --env-file-if-exists=.env server/index.js",
+    "server:dev": "node --env-file-if-exists=.env --watch server/index.js",
     "build": "vite build",
-    "start": "NODE_ENV=production node server/index.js",
+    "start": "NODE_ENV=production node --env-file-if-exists=.env server/index.js",
     "preview": "vite preview",
-    "test": "NODE_ENV=test DB_FILE=:memory: DATA_DIR=./server/.test-data node --test server/test/api.test.js"
+    "test": "NODE_ENV=test node --test server/test/api.test.js",
+    "seed": "node --env-file-if-exists=.env -e \"import('./server/seed.js').then(m=>m.seedDemo()).then(()=>process.exit(0))\""
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
@@ -19,10 +20,12 @@
     "jsonwebtoken": "^9.0.3",
     "lucide-react": "^0.383.0",
     "multer": "^2.5.0",
+    "pg": "^8.23.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.16",
     "@tailwindcss/vite": "^4.0.0",
     "@vitejs/plugin-react": "^4.3.1",
     "concurrently": "^10.0.7",

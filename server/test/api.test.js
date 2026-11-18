@@ -1,6 +1,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import app from "../index.js";
+import app from "../app.js";
+import { today } from "../lib.js";
 
 let server, base;
 before(() => new Promise((r) => { server = app.listen(0, () => { base = `http://localhost:${server.address().port}/api`; r(); }); }));
@@ -16,7 +17,6 @@ const call = async (method, path, body, token) => {
   return { status: res.status, body: ct.includes("json") ? await res.json() : await res.text() };
 };
 const reg = async (email) => (await call("POST", "/auth/register", { name: "Test User", email, password: "secret123" })).body.token;
-const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
 const month = () => today().slice(0, 7);
 
 test("auth: register, duplicate, login, bad password, protected routes", async () => {
