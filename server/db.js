@@ -71,7 +71,10 @@ export default db;
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
   id SERIAL PRIMARY KEY,
-  name TEXT NOT NULL,
+  first_name TEXT NOT NULL,
+  middle_name TEXT,                   -- optional
+  last_name TEXT NOT NULL,
+  suffix TEXT,                        -- optional (Jr., Sr., III ...)
   email TEXT NOT NULL,
   password_hash TEXT NOT NULL,
   phone TEXT DEFAULT '',
@@ -102,8 +105,10 @@ CREATE TABLE IF NOT EXISTS transactions (
   date TEXT NOT NULL,                 -- YYYY-MM-DD
   receipt_data BYTEA,                 -- receipts live in the database (Vercel has no persistent disk)
   receipt_mime TEXT,
+  room_number TEXT,                   -- optional
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS room_number TEXT;
 CREATE INDEX IF NOT EXISTS tx_user_date ON transactions(user_id, date);
 CREATE TABLE IF NOT EXISTS budgets (
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -134,7 +139,22 @@ CREATE INDEX IF NOT EXISTS contrib_goal ON contributions(goal_id);
 
 // Creates the tables if they don't exist. Memoised, so it runs once per server instance.
 let ready;
+// Older databases stored one `name` column. Split it into first/last name once, then drop it.
+async function migrate() {
+  await driver.exec(SCHEMA);
+  const legacy = await driver.query("SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'users' AND column_name = 'name'");
+  if (!legacy.rows.length) return;
+  await driver.exec(String.raw`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS first_name TEXT, ADD COLUMN IF NOT EXISTS middle_name TEXT,
+      ADD COLUMN IF NOT EXISTS last_name TEXT, ADD COLUMN IF NOT EXISTS suffix TEXT;
+    UPDATE users SET
+      first_name = CASE WHEN btrim(name) ~ '\s' THEN regexp_replace(btrim(name), '\s+\S+$', '') ELSE btrim(name) END,
+      last_name  = CASE WHEN btrim(name) ~ '\s' THEN regexp_replace(btrim(name), '^.*\s', '') ELSE btrim(name) END
+      WHERE first_name IS NULL;
+    ALTER TABLE users ALTER COLUMN first_name SET NOT NULL, ALTER COLUMN last_name SET NOT NULL;
+    ALTER TABLE users DROP COLUMN name;`);
+}
 export const initDb = () => {
-  ready ??= driver.exec(SCHEMA).catch((e) => { ready = undefined; throw e; });
+  ready ??= migrate().catch((e) => { ready = undefined; throw e; });
   return ready;
 };

@@ -11,8 +11,8 @@ export async function seedDemo() {
 
   await db.transaction(async (tx) => {
     const uid = await tx.insert(
-      "INSERT INTO users (name,email,password_hash,phone,city,occupation) VALUES (?,?,?,?,?,?)",
-      "Alex Santos", DEMO.email, bcrypt.hashSync(DEMO.password, 10), "+63 917 555 0148", "Quezon City", "Junior designer");
+      "INSERT INTO users (first_name,last_name,email,password_hash,phone,city,occupation) VALUES (?,?,?,?,?,?,?)",
+      "Alex", "Santos", DEMO.email, bcrypt.hashSync(DEMO.password, 10), "+63 917 555 0148", "Quezon City", "Junior designer");
 
     for (const [c, l] of Object.entries(DEFAULT_BUDGETS))
       await tx.run("INSERT INTO budgets (user_id, category, limit_amount) VALUES (?,?,?)", uid, c, l);

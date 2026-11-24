@@ -7,7 +7,7 @@ import crypto from "node:crypto";
 import db, { initDb } from "./db.js";
 import {
   EXPENSE_CATS, INCOME_CAT, DEFAULT_BUDGETS, today, currentMonth, validMonth, validDate,
-  shiftMonth, round2, addDays, HttpError,
+  shiftMonth, round2, addDays, HttpError, passwordProblem, NAME_RE,
 } from "./lib.js";
 
 const PROD = process.env.NODE_ENV === "production";
@@ -40,12 +40,21 @@ const limiter = (max, windowMs) => (req, _res, next) => {
 const authLimit = process.env.NODE_ENV === "test" ? (_q, _r, n) => n() : limiter(20, 10 * 60 * 1000);
 
 /* ---------- helpers ---------- */
+const fullName = (u) => [u.first_name, u.middle_name, u.last_name, u.suffix].filter(Boolean).join(" ");
 const userOut = (u) => ({
-  id: u.id, name: u.name, email: u.email, phone: u.phone, city: u.city, occupation: u.occupation,
+  id: u.id, name: fullName(u), firstName: u.first_name, middleName: u.middle_name || "", lastName: u.last_name, suffix: u.suffix || "",
+  email: u.email, phone: u.phone, city: u.city, occupation: u.occupation,
   prefs: JSON.parse(u.prefs), createdAt: new Date(u.created_at).toISOString(), passwordChangedAt: new Date(u.password_changed_at).toISOString(),
 });
 const sign = (u, remember) => jwt.sign({ uid: u.id }, SECRET, { expiresIn: remember ? "30d" : "1d" });
 const str = (v, max = 200) => (typeof v === "string" ? v.trim().slice(0, max) : "");
+// Name parts: first + last are required; middle + suffix are optional (stored as NULL when blank).
+function nameField(v, label, { required = false, max = 50 } = {}) {
+  const s = str(v, max).replace(/\s+/g, " ");
+  if (!s) { if (required) throw new HttpError(400, `Please enter your ${label}.`); return null; }
+  if (!NAME_RE.test(s)) throw new HttpError(400, `${label[0].toUpperCase() + label.slice(1)} can only contain letters, spaces, hyphens, apostrophes and periods.`);
+  return s;
+}
 const emailOk = (e) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
 const pid = (v) => (/^\d{1,9}$/.test(String(v)) ? Number(v) : 0); // route ids -> safe int (0 matches nothing)
 const money = (v, field = "Amount") => {
@@ -76,17 +85,20 @@ async function initUser(tx, uid) {
 
 /* ======================= AUTH ======================= */
 app.post("/api/auth/register", authLimit, wrap(async (req, res) => {
-  const name = str(req.body.name, 80), email = str(req.body.email, 120).toLowerCase();
-  const password = String(req.body.password || "");
-  if (!name) throw new HttpError(400, "Please enter your full name.");
+  const b = req.body;
+  const first = nameField(b.firstName, "first name", { required: true }), last = nameField(b.lastName, "last name", { required: true });
+  const middle = nameField(b.middleName, "middle name"), suffix = nameField(b.suffix, "suffix", { max: 10 });
+  const email = str(b.email, 120).toLowerCase();
+  const password = String(b.password || "");
   if (!emailOk(email)) throw new HttpError(400, "Please enter a valid email address.");
-  if (password.length < 8) throw new HttpError(400, "Password must be at least 8 characters.");
+  const pwBad = passwordProblem(password);
+  if (pwBad) throw new HttpError(400, pwBad);
   if (await db.get("SELECT 1 AS x FROM users WHERE lower(email) = ?", email)) throw new HttpError(409, "An account with that email already exists.");
   const hash = await bcrypt.hash(password, 10);
   let id;
   try {
     id = await db.transaction(async (tx) => {
-      const uid = await tx.insert("INSERT INTO users (name, email, password_hash) VALUES (?,?,?)", name, email, hash);
+      const uid = await tx.insert("INSERT INTO users (first_name, middle_name, last_name, suffix, email, password_hash) VALUES (?,?,?,?,?,?)", first, middle, last, suffix, email, hash);
       await initUser(tx, uid);
       return uid;
     });
@@ -126,7 +138,8 @@ app.post("/api/auth/reset", authLimit, wrap(async (req, res) => {
   const email = str(req.body.email, 120).toLowerCase();
   const code = str(req.body.code, 40);
   const password = String(req.body.password || "");
-  if (password.length < 8) throw new HttpError(400, "Password must be at least 8 characters.");
+  const pwBad = passwordProblem(password);
+  if (pwBad) throw new HttpError(400, pwBad);
   const u = await db.get("SELECT * FROM users WHERE lower(email) = ?", email);
   const h = crypto.createHash("sha256").update(code).digest("hex");
   if (!u || !u.reset_token || u.reset_token !== h || !u.reset_expires || new Date(u.reset_expires) < new Date())
@@ -141,9 +154,11 @@ app.get("/api/me", auth, (req, res) => res.json({ user: userOut(req.user) }));
 
 app.put("/api/me", auth, wrap(async (req, res) => {
   const b = req.body, u = req.user;
-  const name = b.name !== undefined ? str(b.name, 80) : u.name;
+  const first = b.firstName !== undefined ? nameField(b.firstName, "first name", { required: true }) : u.first_name;
+  const last = b.lastName !== undefined ? nameField(b.lastName, "last name", { required: true }) : u.last_name;
+  const middle = b.middleName !== undefined ? nameField(b.middleName, "middle name") : u.middle_name;
+  const suffix = b.suffix !== undefined ? nameField(b.suffix, "suffix", { max: 10 }) : u.suffix;
   const email = b.email !== undefined ? str(b.email, 120).toLowerCase() : u.email;
-  if (!name) throw new HttpError(400, "Name can't be empty.");
   if (!emailOk(email)) throw new HttpError(400, "Please enter a valid email address.");
   const taken = await db.get("SELECT id FROM users WHERE lower(email) = ? AND id != ?", email, u.id);
   if (taken) throw new HttpError(409, "That email is already used by another account.");
@@ -151,8 +166,8 @@ app.put("/api/me", auth, wrap(async (req, res) => {
     ? JSON.stringify({ ...JSON.parse(u.prefs), ...Object.fromEntries(Object.entries(b.prefs).map(([k, v]) => [k, !!v])) })
     : u.prefs;
   try {
-    await db.run("UPDATE users SET name=?, email=?, phone=?, city=?, occupation=?, prefs=? WHERE id=?",
-      name, email,
+    await db.run("UPDATE users SET first_name=?, middle_name=?, last_name=?, suffix=?, email=?, phone=?, city=?, occupation=?, prefs=? WHERE id=?",
+      first, middle, last, suffix, email,
       b.phone !== undefined ? str(b.phone, 30) : u.phone,
       b.city !== undefined ? str(b.city, 60) : u.city,
       b.occupation !== undefined ? str(b.occupation, 60) : u.occupation,
@@ -167,7 +182,8 @@ app.put("/api/me", auth, wrap(async (req, res) => {
 app.put("/api/me/password", auth, wrap(async (req, res) => {
   const { current, next } = req.body;
   if (!(await bcrypt.compare(String(current || ""), req.user.password_hash))) throw new HttpError(400, "Your current password is incorrect.");
-  if (String(next || "").length < 8) throw new HttpError(400, "New password must be at least 8 characters.");
+  const pwBad = passwordProblem(next);
+  if (pwBad) throw new HttpError(400, pwBad);
   await db.run("UPDATE users SET password_hash = ?, password_changed_at = now() WHERE id = ?",
     await bcrypt.hash(String(next), 10), req.user.id);
   res.json({ message: "Password changed." });
@@ -231,9 +247,9 @@ const upload = multer({
       ? cb(null, true) : cb(new HttpError(400, "Receipt must be a PNG, JPG, or PDF.")),
 });
 // Never SELECT the receipt bytes in list queries.
-const TX_COLS = "id, title, note, category, amount, payment_method, date, (receipt_mime IS NOT NULL) AS has_receipt";
+const TX_COLS = "id, title, note, room_number, category, amount, payment_method, date, (receipt_mime IS NOT NULL) AS has_receipt";
 const txOut = (t) => ({
-  id: t.id, title: t.title, note: t.note, category: t.category, amount: t.amount,
+  id: t.id, title: t.title, note: t.note, roomNumber: t.room_number || "", category: t.category, amount: t.amount,
   paymentMethod: t.payment_method, date: t.date, hasReceipt: !!t.has_receipt,
 });
 
@@ -244,9 +260,13 @@ function parseTx(b) {
   if (!validDate(date)) throw new HttpError(400, "Please enter a valid date.");
   const category = type === "income" ? INCOME_CAT : str(b.category, 30);
   if (type === "expense" && !EXPENSE_CATS.includes(category)) throw new HttpError(400, "Please choose a category.");
+  // Title is the name of the transaction (required); note is separate, optional extra detail.
+  const title = str(b.title, 100);
+  if (!title) throw new HttpError(400, "Please enter a title for this transaction.");
   const note = str(b.note, 200);
-  const title = str(b.title, 100) || note || category;
-  return { title, note, category, amount: type === "income" ? amount : -amount, date, pm: str(b.paymentMethod, 40) };
+  const room = str(b.roomNumber, 20);
+  if (room && !/^[A-Za-z0-9][A-Za-z0-9 \-\/]*$/.test(room)) throw new HttpError(400, "Room number can only contain letters, numbers, spaces, hyphens and slashes.");
+  return { title, note, room: room || null, category, amount: type === "income" ? amount : -amount, date, pm: str(b.paymentMethod, 40) };
 }
 
 app.get("/api/transactions", auth, wrap(async (req, res) => {
@@ -259,7 +279,7 @@ app.get("/api/transactions", auth, wrap(async (req, res) => {
   if (type === "income") where.push("amount > 0");
   if (type === "expense") where.push("amount < 0");
   if (method && method !== "all") { where.push("payment_method = ?"); args.push(String(method)); }
-  if (q) { where.push("(title ILIKE ? OR note ILIKE ? OR category ILIKE ?)"); const l = `%${String(q).replace(/[%_\\]/g, "")}%`; args.push(l, l, l); }
+  if (q) { where.push("(title ILIKE ? OR note ILIKE ? OR room_number ILIKE ? OR category ILIKE ?)"); const l = `%${String(q).replace(/[%_\\]/g, "")}%`; args.push(l, l, l, l); }
   const rows = await db.all(`SELECT ${TX_COLS} FROM transactions WHERE ${where.join(" AND ")} ORDER BY date DESC, id DESC`, ...args);
   const sum = (f) => round2(rows.filter(f).reduce((a, t) => a + Math.abs(t.amount), 0));
   const inn = sum((t) => t.amount > 0), out = sum((t) => t.amount < 0);
@@ -276,10 +296,10 @@ app.get("/api/transactions", auth, wrap(async (req, res) => {
 }));
 
 app.get("/api/transactions/export", auth, wrap(async (req, res) => {
-  const rows = await db.all("SELECT date, title, note, category, payment_method, amount FROM transactions WHERE user_id = ? ORDER BY date DESC, id DESC", req.user.id);
+  const rows = await db.all("SELECT date, title, note, room_number, category, payment_method, amount FROM transactions WHERE user_id = ? ORDER BY date DESC, id DESC", req.user.id);
   const esc = (v) => { let s = String(v ?? ""); if (/^[=+\-@]/.test(s)) s = "'" + s; return `"${s.replace(/"/g, '""')}"`; };
-  const csv = ["Date,Title,Note,Category,Payment method,Amount"]
-    .concat(rows.map((t) => [t.date, esc(t.title), esc(t.note), t.category, esc(t.payment_method), t.amount].join(","))).join("\n");
+  const csv = ["Date,Title,Note,Room number,Category,Payment method,Amount"]
+    .concat(rows.map((t) => [t.date, esc(t.title), esc(t.note), esc(t.room_number), t.category, esc(t.payment_method), t.amount].join(","))).join("\n");
   res.set({ "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": 'attachment; filename="budgetmate-transactions.csv"' }).send(csv);
 }));
 
@@ -294,8 +314,8 @@ app.get("/api/transactions/:id", auth, wrap(async (req, res) => res.json({ item:
 app.post("/api/transactions", auth, upload.single("receipt"), wrap(async (req, res) => {
   const t = parseTx(req.body);
   const id = await db.insert(
-    "INSERT INTO transactions (user_id, title, note, category, amount, payment_method, date, receipt_data, receipt_mime) VALUES (?,?,?,?,?,?,?,?,?)",
-    req.user.id, t.title, t.note, t.category, t.amount, t.pm, t.date, req.file?.buffer ?? null, req.file?.mimetype ?? null);
+    "INSERT INTO transactions (user_id, title, note, room_number, category, amount, payment_method, date, receipt_data, receipt_mime) VALUES (?,?,?,?,?,?,?,?,?,?)",
+    req.user.id, t.title, t.note, t.room, t.category, t.amount, t.pm, t.date, req.file?.buffer ?? null, req.file?.mimetype ?? null);
   res.status(201).json({ item: txOut(await ownTx(id, req.user.id)) });
 }));
 
@@ -304,8 +324,8 @@ app.put("/api/transactions/:id", auth, upload.single("receipt"), wrap(async (req
   const t = parseTx(req.body);
   // A new file replaces the old receipt; no file keeps whatever is already attached.
   await db.run(
-    "UPDATE transactions SET title=?, note=?, category=?, amount=?, payment_method=?, date=?, receipt_data = COALESCE(?, receipt_data), receipt_mime = COALESCE(?, receipt_mime) WHERE id=?",
-    t.title, t.note, t.category, t.amount, t.pm, t.date, req.file?.buffer ?? null, req.file?.mimetype ?? null, old.id);
+    "UPDATE transactions SET title=?, note=?, room_number=?, category=?, amount=?, payment_method=?, date=?, receipt_data = COALESCE(?, receipt_data), receipt_mime = COALESCE(?, receipt_mime) WHERE id=?",
+    t.title, t.note, t.room, t.category, t.amount, t.pm, t.date, req.file?.buffer ?? null, req.file?.mimetype ?? null, old.id);
   res.json({ item: txOut(await ownTx(old.id, req.user.id)) });
 }));
 
