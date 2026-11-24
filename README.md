@@ -51,6 +51,17 @@ npm start        # serves the API and the built app on http://localhost:3001
 npm test   # runs against an in-memory Postgres (PGlite), no database needed
 ```
 
+## Consultation changes
+
+- **Passwords**: at least 8 characters, one capital letter, one number and one symbol. Checked live in the form (sign up, reset, change password) and again on the server. Every password field has an eye icon to preview it.
+- **Names**: stored as separate `first_name`, `middle_name` (optional), `last_name` and `suffix` (optional) columns. Existing databases are migrated on the first request: the old `name` column is split (last word becomes the last name) and then dropped, so check names in Settings afterwards.
+- **Transactions**: *Title of the transaction* is required and separate from the optional *Note*. New optional *Room number* column and field (searchable, shown in History, included in the CSV export).
+- **Yes/No confirmation** before anything is saved (account, transaction, profile, password, payment method, goal, funds, budgets) and before deletes.
+- **Toasts** for success, errors, sign in and sign out. Login and sign-up errors now appear as toasts.
+- **Landing page** at `/` for signed-out visitors.
+
+The demo account's password (`password123`) predates the new rule. It still signs in, but a new password must meet the rules.
+
 ## What works
 
 - **Accounts**: sign up, sign in (remember me), sign out, forgot/reset password, change password, delete account. Passwords are bcrypt-hashed; sessions use JWTs.
