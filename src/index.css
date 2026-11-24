@@ -1,1 +1,11 @@
 @import "tailwindcss";
+
+/* Display face for the landing page; falls back to the system UI font if the web font can't load. */
+@theme {
+  --font-display: "Bricolage Grotesque", ui-sans-serif, system-ui, sans-serif;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .slip-in { animation: slip-in 700ms cubic-bezier(.2,.7,.2,1) both; }
+  @keyframes slip-in { from { opacity: 0; transform: translateY(18px) rotate(4deg); } to { opacity: 1; transform: translateY(0) rotate(2deg); } }
+}

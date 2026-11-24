@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { BarChart3, Bell, Clock, Home, Lightbulb, Receipt, Settings as Cog, Target } from "lucide-react";
 import { api, setUnauthorizedHandler, tokenStore, useApi } from "./api.js";
-import { Btn, Ghost, Logo, ToastProvider, initials, useToast, Loading } from "./ui.jsx";
+import { Btn, ConfirmProvider, Ghost, Logo, ToastProvider, initials, useToast, Loading } from "./ui.jsx";
 import { UserCtx, go, useRoute, useUser } from "./session.js";
 import Auth from "./pages/Auth.jsx";
+import Landing from "./pages/Landing.jsx";
 import HomePage from "./pages/Home.jsx";
 import ExpensesPage from "./pages/Expenses.jsx";
 import { GoalsPage, GoalDetail } from "./pages/Goals.jsx";
@@ -20,19 +21,22 @@ const AUTH_PAGES = ["login", "signup", "forgot", "reset"];
 
 function Root() {
   const { page, args } = useRoute();
+  const toast = useToast();
   const [user, setUser] = useState(null);
   const [booting, setBooting] = useState(!!tokenStore.get());
 
   useEffect(() => {
-    setUnauthorizedHandler(() => { tokenStore.clear(); setUser(null); go("login"); });
+    setUnauthorizedHandler(() => { tokenStore.clear(); setUser(null); go("login"); toast("Your session has expired. Please sign in again.", "err"); });
     if (!tokenStore.get()) return;
     api.get("/me").then((r) => setUser(r.user)).catch(() => tokenStore.clear()).finally(() => setBooting(false));
-  }, []);
+  }, [toast]);
 
-  const logout = useCallback(() => { tokenStore.clear(); setUser(null); go("login"); }, []);
+  // Pass a message to say why (e.g. account deleted); otherwise it's a normal sign out.
+  const logout = useCallback((msg) => { tokenStore.clear(); setUser(null); go("login"); toast(typeof msg === "string" ? msg : "You've been signed out.", "info"); }, [toast]);
 
   if (booting) return <Loading />;
   if (!user) {
+    if (!page) return <Landing go={go} />;
     const mode = AUTH_PAGES.includes(page) ? page : "login";
     return <Auth mode={mode} go={go} onAuth={(u) => { setUser(u); go("home"); }} />;
   }
@@ -71,7 +75,7 @@ function Shell({ page, args }) {
   const toast = useToast();
   const { data: summary, reload } = useApi(`/summary?v=${page}/${args.join("/")}`);
   const active = page === "goal" ? "goals" : page;
-  const first = user.name.split(" ")[0];
+  const first = user.firstName;
   const h = new Date().getHours();
   const greet = h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening";
   const month = new Date().toLocaleString("en-US", { month: "long" });
@@ -122,7 +126,7 @@ function Shell({ page, args }) {
             {meta[2]}
             <Bell_ enabled={user.prefs.budget} />
             <button onClick={() => go("settings")} className="flex items-center gap-2">
-              <div className="w-8 h-8 rounded-full bg-emerald-500 text-white text-xs font-bold flex items-center justify-center">{initials(user.name)}</div>
+              <div className="w-8 h-8 rounded-full bg-emerald-500 text-white text-xs font-bold flex items-center justify-center">{initials(`${user.firstName} ${user.lastName}`)}</div>
               <div className="text-xs leading-tight text-left"><b>{user.name}</b><br /><span className="text-slate-500">Personal account</span></div>
             </button>
           </div>
@@ -134,5 +138,5 @@ function Shell({ page, args }) {
 }
 
 export default function App() {
-  return <ToastProvider><Root /></ToastProvider>;
+  return <ToastProvider><ConfirmProvider><Root /></ConfirmProvider></ToastProvider>;
 }

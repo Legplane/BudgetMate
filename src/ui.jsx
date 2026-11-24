@@ -1,7 +1,8 @@
-import { createContext, useCallback, useContext, useEffect, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import {
-  Wallet, Plus, Utensils, Zap, Bus, BookOpen, ShoppingBag, Banknote, X, AlertCircle, Check,
+  Wallet, Plus, Utensils, Zap, Bus, BookOpen, ShoppingBag, Banknote, X, AlertCircle, Check, Eye, EyeOff, Info, Circle,
 } from "lucide-react";
+import { PASSWORD_RULES } from "./validation.js";
 
 export const peso = (n, d = 0) =>
   "₱" + Number(n || 0).toLocaleString("en-PH", { minimumFractionDigits: d, maximumFractionDigits: d });
@@ -97,15 +98,44 @@ export const Input = ({ label, className = "", ...p }) => (
 export const Select = ({ label, children, className = "", ...p }) => (
   <div className={className}>{label && <Label>{label}</Label>}<select {...p} className={inputCls}>{children}</select></div>
 );
+/* ---------- password field with an eye icon inside the input, and a live rules checklist ---------- */
+export function PasswordInput({ label, className = "", ...p }) {
+  const [show, setShow] = useState(false);
+  return (
+    <div className={className}>
+      {label && <Label>{label}</Label>}
+      <div className="relative">
+        <input {...p} type={show ? "text" : "password"} className={`${inputCls} pr-10`} />
+        <button type="button" aria-label={show ? "Hide password" : "Show password"} aria-pressed={show} onClick={() => setShow(!show)}
+          className="absolute inset-y-0 right-0 px-3 text-slate-400 hover:text-slate-700">{show ? <EyeOff size={15} /> : <Eye size={15} />}</button>
+      </div>
+    </div>
+  );
+}
+export function PasswordRules({ value }) {
+  return (
+    <ul className="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px]" aria-label="Password requirements">
+      {PASSWORD_RULES.map(([text, ok]) => { const met = ok(value); return (
+        <li key={text} className={`flex items-center gap-1.5 ${met ? "text-emerald-700" : "text-slate-500"}`}>
+          {met ? <Check size={11} className="shrink-0" /> : <Circle size={9} className="shrink-0 mx-px" />}{text}
+          <span className="sr-only">{met ? "(met)" : "(not met yet)"}</span>
+        </li>); })}
+    </ul>
+  );
+}
+
 export const Empty = ({ children }) => <div className="text-xs text-slate-500 py-6 text-center">{children}</div>;
 export const ErrorBox = ({ children }) => children ? (
   <div className="flex items-start gap-2 bg-red-50 text-red-700 text-xs rounded-xl p-3"><AlertCircle size={14} className="shrink-0 mt-px" />{children}</div>
 ) : null;
 export const Loading = () => <div className="text-sm text-slate-500 py-10 text-center">Loading…</div>;
 
+// True while a Yes/No confirmation is open, so Escape only dismisses the confirmation and not the form under it.
+let confirmOpen = false;
+
 export function Modal({ title, onClose, children, width = "max-w-md" }) {
   useEffect(() => {
-    const h = (e) => e.key === "Escape" && onClose();
+    const h = (e) => e.key === "Escape" && !confirmOpen && onClose();
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
   }, [onClose]);
@@ -123,25 +153,73 @@ export function Modal({ title, onClose, children, width = "max-w-md" }) {
 }
 
 /* ---------- toasts ---------- */
+// toast("Saved") -> success, toast("Oops", "err") -> error, toast("Signed out", "info") -> neutral.
 const ToastCtx = createContext(() => {});
 export const useToast = () => useContext(ToastCtx);
+const TOAST_STYLE = {
+  ok: ["bg-emerald-600", Check, "success"],
+  err: ["bg-red-600", AlertCircle, "error"],
+  info: ["bg-slate-800", Info, "info"],
+};
 export function ToastProvider({ children }) {
   const [list, setList] = useState([]);
+  const timers = useRef({});
+  const dismiss = useCallback((id) => { clearTimeout(timers.current[id]); setList((l) => l.filter((x) => x.id !== id)); }, []);
   const push = useCallback((msg, kind = "ok") => {
+    if (!msg) return;
+    kind = TOAST_STYLE[kind] ? kind : "ok";
     const id = Math.random();
-    setList((l) => [...l, { id, msg, kind }]);
-    setTimeout(() => setList((l) => l.filter((x) => x.id !== id)), 3500);
-  }, []);
+    // The same message twice in a row (e.g. a double click) is shown once.
+    setList((l) => l.some((x) => x.msg === msg && x.kind === kind) ? l : [...l.slice(-3), { id, msg, kind }]);
+    timers.current[id] = setTimeout(() => dismiss(id), kind === "err" ? 6000 : 3500);
+  }, [dismiss]);
   return (
     <ToastCtx.Provider value={push}>
       {children}
-      <div className="fixed bottom-4 right-4 z-[60] space-y-2">
-        {list.map((t) => (
-          <div key={t.id} className={`text-sm font-medium rounded-xl px-4 py-2.5 shadow-lg flex items-center gap-2 text-white ${t.kind === "err" ? "bg-red-500" : "bg-slate-900"}`}>
-            {t.kind === "err" ? <AlertCircle size={14} /> : <Check size={14} className="text-emerald-400" />}{t.msg}
-          </div>
-        ))}
+      <div className="fixed bottom-4 right-4 z-[80] flex flex-col gap-2 w-[min(22rem,calc(100vw-2rem))]" role="region" aria-label="Notifications">
+        {list.map((t) => { const [bg, Icon, role] = TOAST_STYLE[t.kind]; return (
+          <div key={t.id} role={t.kind === "err" ? "alert" : "status"} data-toast={role}
+            className={`${bg} text-white text-sm font-medium rounded-xl pl-3.5 pr-2 py-2.5 shadow-lg flex items-start gap-2.5`}>
+            <Icon size={15} className="shrink-0 mt-0.5" /><span className="flex-1">{t.msg}</span>
+            <button type="button" aria-label="Dismiss" onClick={() => dismiss(t.id)} className="opacity-70 hover:opacity-100 p-0.5"><X size={13} /></button>
+          </div>); })}
       </div>
     </ToastCtx.Provider>
+  );
+}
+
+/* ---------- Yes / No confirmation ---------- */
+// const confirm = useConfirm();  if (!(await confirm({ title: "Save expense?", message: "..." }))) return;
+const ConfirmCtx = createContext(async () => true);
+export const useConfirm = () => useContext(ConfirmCtx);
+export function ConfirmProvider({ children }) {
+  const [ask, setAsk] = useState(null);
+  const confirm = useCallback((opts) => new Promise((resolve) => setAsk({ ...opts, resolve })), []);
+  const answer = (v) => { ask.resolve(v); setAsk(null); };
+  useEffect(() => {
+    confirmOpen = !!ask;
+    if (!ask) return;
+    const h = (e) => { if (e.key === "Escape") { e.stopPropagation(); ask.resolve(false); setAsk(null); } };
+    window.addEventListener("keydown", h, true);
+    return () => window.removeEventListener("keydown", h, true);
+  }, [ask]);
+  return (
+    <ConfirmCtx.Provider value={confirm}>
+      {children}
+      {ask && (
+        <div className="fixed inset-0 z-[70] bg-slate-900/50 flex items-center justify-center p-4" onMouseDown={(e) => e.target === e.currentTarget && answer(false)}>
+          <div role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-msg" className="bg-white rounded-2xl w-full max-w-sm p-6 shadow-xl">
+            <h3 id="confirm-title" className="font-bold">{ask.title || "Are you sure?"}</h3>
+            {ask.message && <p id="confirm-msg" className="text-sm text-slate-600 mt-1.5">{ask.message}</p>}
+            <div className="flex justify-end gap-2 mt-5">
+              <Ghost onClick={() => answer(false)} className="min-w-16">No</Ghost>
+              {ask.danger
+                ? <Danger onClick={() => answer(true)} autoFocus className="min-w-16">Yes</Danger>
+                : <Btn onClick={() => answer(true)} autoFocus className="min-w-16">Yes</Btn>}
+            </div>
+          </div>
+        </div>
+      )}
+    </ConfirmCtx.Provider>
   );
 }

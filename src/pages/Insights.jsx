@@ -1,17 +1,20 @@
 import { useState } from "react";
 import { Pencil } from "lucide-react";
 import { api, useApi } from "../api.js";
-import { Bar, Btn, Card, Empty, ErrorBox, Ghost, Ico, Input, Loading, Modal, Select, Stat, EXPENSE_CATS, monthLabel, monthOptions, peso, useToast } from "../ui.jsx";
+import { Bar, Btn, Card, Empty, Ghost, Ico, Input, Loading, Modal, Select, Stat, EXPENSE_CATS, monthLabel, monthOptions, peso, useConfirm, useToast } from "../ui.jsx";
 
 const TONE = { good: "bg-emerald-50 text-emerald-800", warn: "bg-amber-50 text-amber-800", info: "bg-blue-50 text-blue-800" };
 
 export function BudgetEditor({ budgets, onClose, onSaved }) {
   const toast = useToast();
+  const confirm = useConfirm();
   const [v, setV] = useState(Object.fromEntries(EXPENSE_CATS.map((c) => [c, String(budgets[c] ?? 0)])));
-  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
   const save = async (e) => {
     e.preventDefault();
-    try { await api.put("/budgets", { budgets: v }); toast("Budgets updated"); onSaved(); } catch (x) { setErr(x.message); }
+    if (!(await confirm({ title: "Save your monthly budgets?", message: "The new limits apply to this and future months." }))) return;
+    setBusy(true);
+    try { await api.put("/budgets", { budgets: v }); toast("Budgets updated"); onSaved(); } catch (x) { toast(x.message, "err"); setBusy(false); }
   };
   return (
     <Modal title="Monthly budgets" onClose={onClose}>
@@ -20,8 +23,7 @@ export function BudgetEditor({ budgets, onClose, onSaved }) {
         <div className="grid grid-cols-2 gap-3">
           {EXPENSE_CATS.map((c) => <Input key={c} label={c} inputMode="numeric" value={v[c]} onChange={(e) => setV({ ...v, [c]: e.target.value.replace(/[^\d.]/g, "") })} />)}
         </div>
-        <ErrorBox>{err}</ErrorBox>
-        <div className="flex justify-end gap-2"><Ghost onClick={onClose}>Cancel</Ghost><Btn type="submit">Save budgets</Btn></div>
+        <div className="flex justify-end gap-2"><Ghost onClick={onClose}>Cancel</Ghost><Btn type="submit" disabled={busy}>{busy ? "Saving…" : "Save budgets"}</Btn></div>
       </form>
     </Modal>
   );

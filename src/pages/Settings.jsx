@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { Home, Landmark, LogOut, Mail, Smartphone, Trash2, User, Wallet } from "lucide-react";
 import { api, tokenStore, useApi } from "../api.js";
-import { Btn, Card, Danger, Empty, ErrorBox, Ghost, Input, Label, Modal, Select, Toggle, fmtDate, initials, inputCls, useToast } from "../ui.jsx";
+import { Btn, Card, Danger, Empty, Ghost, Input, Label, Modal, PasswordInput, PasswordRules, Select, Toggle, fmtDate, initials, inputCls, useConfirm, useToast } from "../ui.jsx";
+import { SUFFIXES, emailOk, nameProblem, passwordProblem } from "../validation.js";
 import { go, useUser } from "../session.js";
 import { BudgetEditor } from "./Insights.jsx";
 
@@ -18,28 +19,42 @@ const IconInput = ({ icon: I, label, className = "", ...p }) => (
 
 function PasswordModal({ onClose }) {
   const toast = useToast();
-  const [f, setF] = useState({ current: "", next: "", again: "" }); const [err, setErr] = useState("");
+  const confirm = useConfirm();
+  const [f, setF] = useState({ current: "", next: "", again: "" }); const [busy, setBusy] = useState(false);
   const submit = async (e) => {
     e.preventDefault();
-    if (f.next !== f.again) return setErr("New passwords don't match.");
-    try { await api.put("/me/password", { current: f.current, next: f.next }); toast("Password changed"); onClose(true); } catch (x) { setErr(x.message); }
+    if (!f.current) return toast("Enter your current password.", "err");
+    const bad = passwordProblem(f.next);
+    if (bad) return toast(bad, "err");
+    if (f.next !== f.again) return toast("New passwords don't match.", "err");
+    if (!(await confirm({ title: "Change your password?", message: "You'll use the new password the next time you sign in." }))) return;
+    setBusy(true);
+    try { await api.put("/me/password", { current: f.current, next: f.next }); toast("Password changed"); onClose(true); } catch (x) { toast(x.message, "err"); setBusy(false); }
   };
   return (
     <Modal title="Change password" onClose={() => onClose()}>
       <form onSubmit={submit} className="space-y-3">
-        <Input label="Current password" type="password" autoFocus value={f.current} onChange={(e) => setF({ ...f, current: e.target.value })} />
-        <Input label="New password" type="password" placeholder="At least 8 characters" value={f.next} onChange={(e) => setF({ ...f, next: e.target.value })} />
-        <Input label="Confirm new password" type="password" value={f.again} onChange={(e) => setF({ ...f, again: e.target.value })} />
-        <ErrorBox>{err}</ErrorBox>
-        <div className="flex justify-end gap-2"><Ghost onClick={() => onClose()}>Cancel</Ghost><Btn type="submit">Update password</Btn></div>
+        <PasswordInput label="Current password" autoFocus autoComplete="current-password" value={f.current} onChange={(e) => setF({ ...f, current: e.target.value })} />
+        <PasswordInput label="New password" autoComplete="new-password" value={f.next} onChange={(e) => setF({ ...f, next: e.target.value })} />
+        <PasswordRules value={f.next} />
+        <PasswordInput label="Confirm new password" autoComplete="new-password" value={f.again} onChange={(e) => setF({ ...f, again: e.target.value })} />
+        <div className="flex justify-end gap-2"><Ghost onClick={() => onClose()}>Cancel</Ghost><Btn type="submit" disabled={busy}>{busy ? "Saving…" : "Update password"}</Btn></div>
       </form>
     </Modal>
   );
 }
 
 function MethodModal({ onClose }) {
-  const [f, setF] = useState({ name: "", detail: "", kind: "ewallet" }); const [err, setErr] = useState("");
-  const submit = async (e) => { e.preventDefault(); try { await api.post("/payment-methods", f); onClose(true); } catch (x) { setErr(x.message); } };
+  const toast = useToast();
+  const confirm = useConfirm();
+  const [f, setF] = useState({ name: "", detail: "", kind: "ewallet" }); const [busy, setBusy] = useState(false);
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!f.name.trim()) return toast("Enter a name for this payment method.", "err");
+    if (!(await confirm({ title: "Add this payment method?", message: f.name.trim() }))) return;
+    setBusy(true);
+    try { await api.post("/payment-methods", f); onClose(true); } catch (x) { toast(x.message, "err"); setBusy(false); }
+  };
   return (
     <Modal title="Add payment method" onClose={() => onClose()}>
       <form onSubmit={submit} className="space-y-3">
@@ -48,22 +63,21 @@ function MethodModal({ onClose }) {
         <Select label="Type" value={f.kind} onChange={(e) => setF({ ...f, kind: e.target.value })}>
           <option value="bank">Bank account</option><option value="ewallet">E-wallet</option><option value="card">Card</option><option value="cash">Cash</option>
         </Select>
-        <ErrorBox>{err}</ErrorBox>
-        <div className="flex justify-end gap-2"><Ghost onClick={() => onClose()}>Cancel</Ghost><Btn type="submit">Add method</Btn></div>
+        <div className="flex justify-end gap-2"><Ghost onClick={() => onClose()}>Cancel</Ghost><Btn type="submit" disabled={busy}>{busy ? "Saving…" : "Add method"}</Btn></div>
       </form>
     </Modal>
   );
 }
 
 function DeleteModal({ onClose, onDone }) {
-  const [pw, setPw] = useState(""); const [err, setErr] = useState("");
-  const submit = async (e) => { e.preventDefault(); try { await api.del("/me", { password: pw }); onDone(); } catch (x) { setErr(x.message); } };
+  const toast = useToast();
+  const [pw, setPw] = useState("");
+  const submit = async (e) => { e.preventDefault(); try { await api.del("/me", { password: pw }); onDone(); } catch (x) { toast(x.message, "err"); } };
   return (
     <Modal title="Delete account" onClose={onClose}>
       <form onSubmit={submit} className="space-y-3">
         <p className="text-xs text-slate-600">This permanently deletes your account, transactions, goals, and receipts. This can't be undone.</p>
-        <Input label="Confirm with your password" type="password" autoFocus value={pw} onChange={(e) => setPw(e.target.value)} />
-        <ErrorBox>{err}</ErrorBox>
+        <PasswordInput label="Confirm with your password" autoFocus autoComplete="current-password" value={pw} onChange={(e) => setPw(e.target.value)} />
         <div className="flex justify-end gap-2"><Ghost onClick={onClose}>Cancel</Ghost><Danger type="submit">Delete my account</Danger></div>
       </form>
     </Modal>
@@ -73,17 +87,21 @@ function DeleteModal({ onClose, onDone }) {
 export default function SettingsPage({ onChanged }) {
   const { user, setUser, logout } = useUser();
   const toast = useToast();
+  const confirm = useConfirm();
   const { data: pms, reload: reloadPms } = useApi("/payment-methods");
   const { data: budgets, reload: reloadBudgets } = useApi("/budgets");
-  const [f, setF] = useState({ name: user.name, email: user.email, phone: user.phone, city: user.city, occupation: user.occupation });
-  const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
+  const [f, setF] = useState({ firstName: user.firstName, middleName: user.middleName, lastName: user.lastName, suffix: user.suffix, email: user.email, phone: user.phone, city: user.city, occupation: user.occupation });
+  const [busy, setBusy] = useState(false);
   const [modal, setModal] = useState(null);
-  const dirty = ["name", "email", "phone", "city", "occupation"].some((k) => f[k] !== user[k]);
+  const dirty = ["firstName", "middleName", "lastName", "suffix", "email", "phone", "city", "occupation"].some((k) => f[k] !== user[k]);
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
 
   const save = async () => {
-    setErr(""); setBusy(true);
-    try { const r = await api.put("/me", f); setUser(r.user); toast("Profile saved"); onChanged?.(); } catch (e) { setErr(e.message); } finally { setBusy(false); }
+    const bad = nameProblem(f) || (!emailOk(f.email.trim()) && "Please enter a valid email address.");
+    if (bad) return toast(bad, "err");
+    if (!(await confirm({ title: "Save your profile changes?", message: "Your personal details will be updated." }))) return;
+    setBusy(true);
+    try { const r = await api.put("/me", f); setUser(r.user); toast("Profile saved"); onChanged?.(); } catch (e) { toast(e.message, "err"); } finally { setBusy(false); }
   };
   const pref = (k) => async (v) => {
     try { const r = await api.put("/me", { prefs: { [k]: v } }); setUser(r.user); } catch (e) { toast(e.message, "err"); }
@@ -91,7 +109,7 @@ export default function SettingsPage({ onChanged }) {
 
   return (<>
     <Card className="flex items-center justify-between">
-      <div className="flex items-center gap-4"><div className="w-14 h-14 rounded-full bg-emerald-100 text-emerald-700 text-xl font-bold flex items-center justify-center">{initials(user.name)}</div>
+      <div className="flex items-center gap-4"><div className="w-14 h-14 rounded-full bg-emerald-100 text-emerald-700 text-xl font-bold flex items-center justify-center">{initials(`${user.firstName} ${user.lastName}`)}</div>
         <div><b className="text-lg">{user.name}</b><div className="text-xs text-slate-500">{user.email} · Member since {fmtDate(user.createdAt.slice(0, 10))}</div></div></div>
       <Btn disabled={!dirty || busy} onClick={save}>{busy ? "Saving…" : "Save changes"}</Btn>
     </Card>
@@ -100,13 +118,17 @@ export default function SettingsPage({ onChanged }) {
         <Card>
           <b>Personal details</b>
           <div className="grid grid-cols-2 gap-3 mt-3">
-            <IconInput label="Full name" icon={User} value={f.name} onChange={set("name")} />
+            <IconInput label="First name" icon={User} value={f.firstName} onChange={set("firstName")} maxLength={50} autoComplete="given-name" />
+            <IconInput label="Last name" icon={User} value={f.lastName} onChange={set("lastName")} maxLength={50} autoComplete="family-name" />
+            <IconInput label="Middle name (optional)" icon={User} value={f.middleName} onChange={set("middleName")} maxLength={50} autoComplete="additional-name" />
+            <Select label="Suffix (optional)" value={f.suffix} onChange={set("suffix")}>
+              <option value="">None</option>{SUFFIXES.map((s) => <option key={s}>{s}</option>)}
+            </Select>
             <IconInput label="Mobile number" icon={Smartphone} value={f.phone} onChange={set("phone")} placeholder="+63 9XX XXX XXXX" />
             <IconInput className="col-span-2" label="Email address" icon={Mail} type="email" value={f.email} onChange={set("email")} />
             <IconInput label="City" icon={Home} value={f.city} onChange={set("city")} />
             <IconInput label="Occupation" icon={User} value={f.occupation} onChange={set("occupation")} />
           </div>
-          <div className="mt-3"><ErrorBox>{err}</ErrorBox></div>
         </Card>
         <Card>
           <b>Account & security</b>
@@ -115,7 +137,7 @@ export default function SettingsPage({ onChanged }) {
           <Row t="Delete account" s="Permanently remove your account and all of your data" right={<Ghost className="!text-red-600" onClick={() => setModal("del")}><Trash2 size={13} className="inline mr-1" />Delete</Ghost>} />
         </Card>
         <Card className="flex items-center justify-between"><div><b className="text-sm">Sign out of BudgetMate</b><div className="text-xs text-slate-500">You can sign back in anytime.</div></div>
-          <Danger onClick={logout} className="flex items-center gap-2"><LogOut size={14} />Sign out</Danger></Card>
+          <Danger onClick={() => logout()} className="flex items-center gap-2"><LogOut size={14} />Sign out</Danger></Card>
       </div>
       <div className="space-y-4">
         <Card>
@@ -135,13 +157,13 @@ export default function SettingsPage({ onChanged }) {
           {pms?.items.map((p) => { const I = KIND_ICON[p.kind] || Landmark; return (
             <div key={p.id} className="flex items-center gap-3 mt-3 text-xs"><div className="w-8 h-8 rounded-lg bg-emerald-100 text-emerald-600 flex items-center justify-center"><I size={14} /></div>
               <div className="flex-1"><b className="text-sm">{p.name}</b><div className="text-slate-500">{p.detail}</div></div>
-              <button aria-label={`Remove ${p.name}`} className="text-slate-300 hover:text-red-500" onClick={async () => { if (!confirm(`Remove ${p.name}? Past transactions keep their label.`)) return; try { await api.del(`/payment-methods/${p.id}`); reloadPms(); } catch (e) { toast(e.message, "err"); } }}><Trash2 size={13} /></button></div>); })}
+              <button aria-label={`Remove ${p.name}`} className="text-slate-300 hover:text-red-500" onClick={async () => { if (!(await confirm({ title: `Remove ${p.name}?`, message: "Past transactions keep their label.", danger: true }))) return; try { await api.del(`/payment-methods/${p.id}`); toast("Payment method removed"); reloadPms(); } catch (e) { toast(e.message, "err"); } }}><Trash2 size={13} /></button></div>); })}
         </Card>
       </div>
     </div>
     {modal === "pw" && <PasswordModal onClose={() => setModal(null)} />}
     {modal === "pm" && <MethodModal onClose={(ok) => { setModal(null); if (ok) { toast("Payment method added"); reloadPms(); } }} />}
     {modal === "budget" && budgets && <BudgetEditor budgets={budgets.budgets} onClose={() => setModal(null)} onSaved={() => { setModal(null); reloadBudgets(); onChanged?.(); }} />}
-    {modal === "del" && <DeleteModal onClose={() => setModal(null)} onDone={() => { tokenStore.clear(); location.hash = ""; location.reload(); }} />}
+    {modal === "del" && <DeleteModal onClose={() => setModal(null)} onDone={() => logout("Your account has been deleted.")} />}
   </>);
 }

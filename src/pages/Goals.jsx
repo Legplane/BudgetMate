@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { ArrowLeft, Check, Landmark, Lightbulb, Plus, Trash2 } from "lucide-react";
 import { api, useApi } from "../api.js";
-import { Bar, Btn, Card, Danger, Empty, ErrorBox, GOAL_COLORS, Ghost, Ico, Input, Label, Loading, Modal, Stat, fmtDate, inputCls, monthLabel, peso, todayISO, useToast } from "../ui.jsx";
+import { Bar, Btn, Card, Danger, Empty, ErrorBox, GOAL_COLORS, Ghost, Ico, Input, Label, Loading, Modal, Stat, fmtDate, inputCls, monthLabel, peso, todayISO, useConfirm, useToast } from "../ui.jsx";
 import { go } from "../session.js";
 
 const STATUS_CLS = {
@@ -10,15 +10,22 @@ const STATUS_CLS = {
 };
 
 function GoalForm({ goal, onClose, onSaved }) {
+  const toast = useToast();
+  const confirm = useConfirm();
   const [f, setF] = useState({ name: goal?.name || "", target: goal ? String(goal.target) : "", targetDate: goal?.targetDate || "", note: goal?.note || "", color: goal?.color || "emerald" });
-  const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState(false);
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const submit = async (e) => {
-    e.preventDefault(); setErr(""); setBusy(true);
+    e.preventDefault();
+    if (!f.name.trim()) return toast("Give your goal a name.", "err");
+    if (!(Number(f.target) > 0)) return toast("Enter a target amount greater than zero.", "err");
+    if (!f.targetDate) return toast("Choose a target date.", "err");
+    if (!(await confirm({ title: goal ? "Save changes to this goal?" : "Create this goal?", message: `${f.name.trim()} · ${peso(Number(f.target))} by ${fmtDate(f.targetDate)}` }))) return;
+    setBusy(true);
     try {
       const r = goal ? await api.put(`/goals/${goal.id}`, f) : await api.post("/goals", f);
       onSaved(r.item);
-    } catch (x) { setErr(x.message); setBusy(false); }
+    } catch (x) { toast(x.message, "err"); setBusy(false); }
   };
   return (
     <Modal title={goal ? "Edit goal" : "Create goal"} onClose={onClose}>
@@ -33,20 +40,24 @@ function GoalForm({ goal, onClose, onSaved }) {
             <button key={k} type="button" aria-label={k} onClick={() => setF({ ...f, color: k })} className={`w-7 h-7 rounded-full ${c.dot} ${f.color === k ? "ring-2 ring-offset-2 ring-slate-700" : ""}`} />
           ))}</div></div>
         <div><Label>Note</Label><textarea value={f.note} onChange={set("note")} maxLength={300} rows={2} className={inputCls} placeholder="Optional" /></div>
-        <ErrorBox>{err}</ErrorBox>
-        <div className="flex justify-end gap-2"><Ghost onClick={onClose}>Cancel</Ghost><Btn type="submit" disabled={busy}>{goal ? "Save goal" : "Create goal"}</Btn></div>
+        <div className="flex justify-end gap-2"><Ghost onClick={onClose}>Cancel</Ghost><Btn type="submit" disabled={busy}>{busy ? "Saving…" : goal ? "Save goal" : "Create goal"}</Btn></div>
       </form>
     </Modal>
   );
 }
 
 function FundsForm({ goal, onClose, onSaved }) {
+  const toast = useToast();
+  const confirm = useConfirm();
   const [f, setF] = useState({ amount: goal.monthlyNeeded ? String(goal.monthlyNeeded) : "", source: "", date: todayISO() });
-  const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState(false);
   const submit = async (e) => {
-    e.preventDefault(); setErr(""); setBusy(true);
+    e.preventDefault();
+    if (!(Number(f.amount) > 0)) return toast("Enter an amount greater than zero.", "err");
+    if (!(await confirm({ title: "Add these funds?", message: `${peso(Number(f.amount), 2)} will be set aside for ${goal.name} and deducted from your balance.` }))) return;
+    setBusy(true);
     try { onSaved((await api.post(`/goals/${goal.id}/contributions`, f)).item); }
-    catch (x) { setErr(x.message); setBusy(false); }
+    catch (x) { toast(x.message, "err"); setBusy(false); }
   };
   return (
     <Modal title={`Add funds to ${goal.name}`} onClose={onClose}>
@@ -57,8 +68,7 @@ function FundsForm({ goal, onClose, onSaved }) {
           <Input label="Source" value={f.source} maxLength={60} placeholder="e.g. GCash" onChange={(e) => setF({ ...f, source: e.target.value })} />
         </div>
         <p className="text-[11px] text-slate-500">Money added to a goal is set aside, so it's deducted from your available balance.</p>
-        <ErrorBox>{err}</ErrorBox>
-        <div className="flex justify-end gap-2"><Ghost onClick={onClose}>Cancel</Ghost><Btn type="submit" disabled={busy}>Add funds</Btn></div>
+        <div className="flex justify-end gap-2"><Ghost onClick={onClose}>Cancel</Ghost><Btn type="submit" disabled={busy}>{busy ? "Saving…" : "Add funds"}</Btn></div>
       </form>
     </Modal>
   );
@@ -118,6 +128,7 @@ export function GoalsPage() {
 
 export function GoalDetail({ id }) {
   const toast = useToast();
+  const confirm = useConfirm();
   const { data, error, reload } = useApi(`/goals/${id}`);
   const [modal, setModal] = useState(null);
   if (error) return <><button onClick={() => go("goals")} className="text-xs text-emerald-700 font-semibold flex items-center gap-1"><ArrowLeft size={13} />All goals</button><ErrorBox>{error}</ErrorBox></>;
@@ -144,7 +155,7 @@ export function GoalDetail({ id }) {
         <span className="text-slate-500">{g.projectedDate ? `Projected completion · ${fmtDate(g.projectedDate)}` : g.status === "Completed" ? "Goal reached 🎉" : "Add contributions to see a projection"}</span></div>
     </Card>
     <div className="flex gap-2 justify-end -mt-1">
-      <Danger onClick={() => { if (confirm(`Delete "${g.name}" and its contribution history?`)) run(async () => { await api.del(`/goals/${g.id}`); go("goals"); }, "Goal deleted"); }}><Trash2 size={13} className="inline mr-1" />Delete</Danger>
+      <Danger onClick={async () => { if (await confirm({ title: "Delete this goal?", message: `"${g.name}" and its contribution history will be removed.`, danger: true })) run(async () => { await api.del(`/goals/${g.id}`); go("goals"); }, "Goal deleted"); }}><Trash2 size={13} className="inline mr-1" />Delete</Danger>
       <Ghost onClick={() => setModal("edit")}>Edit goal</Ghost>
       <Btn disabled={g.status === "Completed"} onClick={() => setModal("funds")}>Add funds</Btn>
     </div>
@@ -158,7 +169,7 @@ export function GoalDetail({ id }) {
             <div key={r.id} className="grid grid-cols-[1fr_1.3fr_1fr_28px] items-center p-2.5 border-b border-slate-100">
               <span>{fmtDate(r.date)}</span><span className="flex items-center gap-2"><Landmark size={13} className="text-emerald-600" />{r.source}</span>
               <b className="text-right text-emerald-600">+{peso(r.amount, 2)}</b>
-              <button aria-label="Delete contribution" className="text-slate-300 hover:text-red-500 justify-self-end" onClick={() => confirm("Remove this contribution?") && run(() => api.del(`/goals/${g.id}/contributions/${r.id}`), "Contribution removed")}><Trash2 size={13} /></button>
+              <button aria-label="Delete contribution" className="text-slate-300 hover:text-red-500 justify-self-end" onClick={async () => (await confirm({ title: "Remove this contribution?", message: `${peso(r.amount, 2)} will go back to your available balance.`, danger: true })) && run(() => api.del(`/goals/${g.id}/contributions/${r.id}`), "Contribution removed")}><Trash2 size={13} /></button>
             </div>))}
         </div>
       </Card>

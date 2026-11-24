@@ -1,16 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { Check, AlertTriangle, Paperclip } from "lucide-react";
 import { api, useApi } from "../api.js";
-import { Bar, Btn, CATS, Card, ErrorBox, Ghost, Input, Label, Loading, Select, EXPENSE_CATS, inputCls, peso, todayISO, useToast } from "../ui.jsx";
+import { Bar, Btn, CATS, Card, ErrorBox, Ghost, Input, Label, Loading, Select, EXPENSE_CATS, inputCls, peso, todayISO, useConfirm, useToast } from "../ui.jsx";
 import { go } from "../session.js";
 
 export default function ExpensesPage({ editId }) {
   const toast = useToast();
+  const confirm = useConfirm();
   const { data: pmData } = useApi("/payment-methods");
   const { data: existing, error: loadErr } = useApi(editId ? `/transactions/${editId}` : null);
-  const [f, setF] = useState({ type: "expense", amount: "", category: "Food", title: "", note: "", date: todayISO(), paymentMethod: "" });
+  const [f, setF] = useState({ type: "expense", amount: "", category: "Food", title: "", note: "", roomNumber: "", date: todayISO(), paymentMethod: "" });
   const [file, setFile] = useState(null);
-  const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const fileRef = useRef();
   const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
@@ -18,7 +18,7 @@ export default function ExpensesPage({ editId }) {
   useEffect(() => {
     if (!existing) return;
     const t = existing.item;
-    setF({ type: t.amount > 0 ? "income" : "expense", amount: String(Math.abs(t.amount)), category: t.amount > 0 ? "Food" : t.category, title: t.title, note: t.note, date: t.date, paymentMethod: t.paymentMethod });
+    setF({ type: t.amount > 0 ? "income" : "expense", amount: String(Math.abs(t.amount)), category: t.amount > 0 ? "Food" : t.category, title: t.title, note: t.note, roomNumber: t.roomNumber || "", date: t.date, paymentMethod: t.paymentMethod });
   }, [existing]);
   useEffect(() => {
     if (pmData && !editId && !f.paymentMethod && pmData.items[0]) set("paymentMethod", pmData.items[0].name);
@@ -35,19 +35,27 @@ export default function ExpensesPage({ editId }) {
   const sameBucket = orig && orig.amount < 0 && orig.category === f.category && orig.date.slice(0, 7) === month;
   const used = (row?.spent || 0) - (sameBucket ? Math.abs(orig.amount) : 0);
   const left = limit - used - (f.type === "expense" ? n : 0);
-  const dup = monthTx?.items.some((t) => t.id !== Number(editId) && t.date === f.date && Math.abs(t.amount) === n && t.title.toLowerCase() === (f.title || f.note || f.category).toLowerCase());
+  const dup = monthTx?.items.some((t) => t.id !== Number(editId) && t.date === f.date && Math.abs(t.amount) === n && t.title.toLowerCase() === f.title.trim().toLowerCase());
   const future = f.date > todayISO();
 
   const checks = [
     [n > 0, "Amount entered"],
+    [!!f.title.trim(), "Title entered"],
     [!!f.date && !future, future ? "Date is in the future" : "Date looks right"],
     [!!f.paymentMethod, "Payment method selected"],
     [!dup, dup ? "Possible duplicate found" : "Duplicate check passed"],
   ];
 
   const save = async () => {
-    setErr("");
-    if (!n) return setErr("Enter an amount greater than zero.");
+    if (!n) return toast("Enter an amount greater than zero.", "err");
+    if (!f.title.trim()) return toast("Enter a title for this transaction.", "err");
+    if (f.roomNumber.trim() && !/^[A-Za-z0-9][A-Za-z0-9 \-/]*$/.test(f.roomNumber.trim())) return toast("Room number can only contain letters, numbers, spaces, hyphens and slashes.", "err");
+    const kind = f.type === "income" ? "income" : "expense";
+    const ok = await confirm({
+      title: editId ? "Save your changes?" : `Save this ${kind}?`,
+      message: `${f.title.trim()} · ${peso(n, 2)}${f.type === "expense" ? ` · ${f.category}` : ""}`,
+    });
+    if (!ok) return;
     const fd = new FormData();
     Object.entries(f).forEach(([k, v]) => fd.append(k, v));
     if (file) fd.append("receipt", file);
@@ -56,7 +64,7 @@ export default function ExpensesPage({ editId }) {
       if (editId) await api.put(`/transactions/${editId}`, fd); else await api.post("/transactions", fd);
       toast(editId ? "Transaction updated" : f.type === "income" ? "Income added" : "Expense saved");
       go("history");
-    } catch (e) { setErr(e.message); setBusy(false); }
+    } catch (e) { toast(e.message, "err"); setBusy(false); }
   };
 
   if (editId && !existing) return loadErr ? <ErrorBox>{loadErr}</ErrorBox> : <Loading />;
@@ -93,9 +101,12 @@ export default function ExpensesPage({ editId }) {
             {f.paymentMethod && !pmData?.items.some((p) => p.name === f.paymentMethod) && <option value={f.paymentMethod}>{f.paymentMethod}</option>}
           </Select>
         </div>
-        <Input label={isExp ? "Merchant / title" : "Source"} className="mb-4" value={f.title} maxLength={100} onChange={(e) => set("title", e.target.value)} placeholder={isExp ? "e.g. Meralco" : "e.g. Monthly salary"} />
-        <Label>Note</Label>
-        <input value={f.note} maxLength={200} onChange={(e) => set("note", e.target.value)} placeholder="Optional" className={`${inputCls} mb-4`} />
+        <Input label="Title of the transaction" className="mb-4" value={f.title} maxLength={100} required aria-required="true" onChange={(e) => set("title", e.target.value)} placeholder={isExp ? "e.g. Meralco electric bill" : "e.g. Monthly salary"} />
+        <div className="grid grid-cols-3 gap-3 mb-4">
+          <Input label="Room number (optional)" value={f.roomNumber} maxLength={20} onChange={(e) => set("roomNumber", e.target.value)} placeholder="e.g. 204-B" />
+          <div className="col-span-2"><Label>Note (optional)</Label>
+            <input value={f.note} maxLength={200} onChange={(e) => set("note", e.target.value)} placeholder="Extra details, e.g. billing period" className={inputCls} /></div>
+        </div>
         <div className="border border-slate-200 bg-slate-50 rounded-xl p-3 flex justify-between items-center mb-4">
           <div className="text-xs"><b>Attach receipt</b>
             <div className="text-slate-500">{file ? <span className="inline-flex items-center gap-1"><Paperclip size={11} />{file.name}</span> : orig?.hasReceipt ? "A receipt is already attached. Choose a file to replace it." : "PNG, JPG, or PDF up to 4 MB"}</div></div>
@@ -105,11 +116,10 @@ export default function ExpensesPage({ editId }) {
           </div>
           <input ref={fileRef} type="file" hidden accept=".png,.jpg,.jpeg,.pdf" onChange={(e) => {
             const x = e.target.files[0];
-            if (x && x.size > 4 * 1024 * 1024) { setErr("Receipt must be under 4 MB."); e.target.value = ""; return; }
+            if (x && x.size > 4 * 1024 * 1024) { toast("Receipt must be under 4 MB.", "err"); e.target.value = ""; return; }
             setFile(x || null);
           }} />
         </div>
-        <div className="mb-4"><ErrorBox>{err}</ErrorBox></div>
         <div className="flex justify-end gap-2"><Ghost onClick={() => go(editId ? "history" : "home")}>Cancel</Ghost><Btn disabled={busy} onClick={save}>{busy ? "Saving…" : editId ? "Save changes" : isExp ? "Save expense" : "Save income"}</Btn></div>
       </Card>
       <div className="space-y-4">
